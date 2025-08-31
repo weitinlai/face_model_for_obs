@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Face Mesh</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #000;
+            color: white;
+            overflow: hidden;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #videoElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+
+        #canvasElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+        }
+
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 10;
+        }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 10;
+            min-width: 200px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+        }
+
+        .button {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px 0;
+            width: 100%;
+        }
+
+        .button:hover {
+            background: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <video id="videoElement" autoplay muted></video>
+        <canvas id="canvasElement"></canvas>
+        
+        <div id="status">
+            <span id="statusText">初始化中...</span>
+        </div>
+
+        <div id="controls">
+            <h3 style="margin-bottom: 20px; text-align: center;">Face Mesh 控制</h3>
+            
+            <div class="control-group">
+                <label>網格透明度: <span id="opacityValue">0.8</span></label>
+                <input type="range" id="opacitySlider" min="0" max="1" step="0.1" value="0.8">
+            </div>
+
+            <div class="control-group">
+                <label>網格顏色</label>
+                <input type="color" id="meshColor" value="#00ff88">
+            </div>
+
+            <div class="control-group">
+                <label>線條寬度: <span id="lineWidthValue">1</span></label>
+                <input type="range" id="lineWidthSlider" min="0.5" max="3" step="0.1" value="1">
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="showLandmarks" checked> 顯示特徵點
+                </label>
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="showMesh" checked> 顯示網格
+                </label>
+            </div>
+
+            <button class="button" id="resetCamera">重置相機</button>
+        </div>
+    </div>
+
+    <script>
+        // 等待MediaPipe載入
+        let FaceMesh = null;
+        let Camera = null;
+        let isMediaPipeLoaded = false;
+
+        // 檢查MediaPipe是否可用
+        function checkMediaPipe() {
+            if (typeof window.FaceMesh !== 'undefined' && typeof window.Camera !== 'undefined') {
+                FaceMesh = window.FaceMesh;
+                Camera = window.Camera;
+                isMediaPipeLoaded = true;
+                console.log('MediaPipe Face Mesh 和 Camera 已載入');
+                initFaceMesh();
+            } else {
+                console.log('等待 MediaPipe 載入...');
+                setTimeout(checkMediaPipe, 100);
+            }
+        }
+
+        // 添加重試機制
+        let retryCount = 0;
+        const maxRetries = 10;
+        
+        function checkMediaPipeWithRetry() {
+            if (retryCount >= maxRetries) {
+                console.error('MediaPipe 載入失敗，請檢查網路連接');
+                document.getElementById('statusText').textContent = 'MediaPipe 載入失敗';
+                return;
+            }
+            
+            if (typeof window.FaceMesh !== 'undefined' && typeof window.Camera !== 'undefined') {
+                FaceMesh = window.FaceMesh;
+                Camera = window.Camera;
+                isMediaPipeLoaded = true;
+                console.log('MediaPipe Face Mesh 和 Camera 已載入');
+                initFaceMesh();
+            } else {
+                retryCount++;
+                console.log(`等待 MediaPipe 載入... (嘗試 ${retryCount}/${maxRetries})`);
+                setTimeout(checkMediaPipeWithRetry, 500);
+            }
+        }
+
+        class SimpleFaceMeshTracker {
+            constructor() {
+                this.faceMesh = null;
+                this.videoElement = null;
+                this.canvasElement = null;
+                this.landmarks = [];
+                this.isTracking = false;
+                this.animationId = null;
+                
+                this.settings = {
+                    opacity: 0.8,
+                    meshColor: '#00ff88',
+                    lineWidth: 1,
+                    showLandmarks: true,
+                    showMesh: true
+                };
+                
+                this.init();
+            }
+
+            async init() {
+                try {
+                    await this.setupMediaPipe();
+                    this.setupCamera();
+                    this.setupControls();
+                    this.updateStatus('已連接', true);
+                } catch (error) {
+                    console.error('初始化失敗:', error);
+                    this.updateStatus('初始化失敗: ' + error.message, false);
+                }
+            }
+
+            async setupMediaPipe() {
+                if (!isMediaPipeLoaded) {
+                    throw new Error('MediaPipe Face Mesh 未載入');
+                }
+
+                this.faceMesh = new FaceMesh({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+                    }
+                });
+
+                this.faceMesh.setOptions({
+                    maxNumFaces: 1,
+                    refineLandmarks: true,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                this.faceMesh.onResults((results) => {
+                    this.onFaceMeshResults(results);
+                });
+            }
+
+            async setupCamera() {
+                this.videoElement = document.getElementById('videoElement');
+                this.canvasElement = document.getElementById('canvasElement');
+                
+                try {
+                    // 使用MediaPipe的Camera類
+                    this.camera = new Camera(this.videoElement, {
+                        onFrame: async () => {
+                            if (this.faceMesh) {
+                                await this.faceMesh.send({ image: this.videoElement });
+                            }
+                        },
+                        width: 1280,
+                        height: 720
+                    });
+                    
+                    this.camera.start();
+                    this.isTracking = true;
+                    this.updateStatus('相機已啟動', true);
+                } catch (error) {
+                    console.error('相機訪問失敗:', error);
+                    this.updateStatus('相機訪問失敗: ' + error.message, false);
+                }
+            }
+
+            setupControls() {
+                // 透明度控制
+                const opacitySlider = document.getElementById('opacitySlider');
+                const opacityValue = document.getElementById('opacityValue');
+                
+                opacitySlider.addEventListener('input', (e) => {
+                    this.settings.opacity = parseFloat(e.target.value);
+                    opacityValue.textContent = this.settings.opacity.toFixed(1);
+                });
+
+                // 網格顏色控制
+                const meshColor = document.getElementById('meshColor');
+                meshColor.addEventListener('change', (e) => {
+                    this.settings.meshColor = e.target.value;
+                });
+
+                // 線條寬度控制
+                const lineWidthSlider = document.getElementById('lineWidthSlider');
+                const lineWidthValue = document.getElementById('lineWidthValue');
+                
+                lineWidthSlider.addEventListener('input', (e) => {
+                    this.settings.lineWidth = parseFloat(e.target.value);
+                    lineWidthValue.textContent = this.settings.lineWidth.toFixed(1);
+                });
+
+                // 顯示選項
+                document.getElementById('showLandmarks').addEventListener('change', (e) => {
+                    this.settings.showLandmarks = e.target.checked;
+                });
+
+                document.getElementById('showMesh').addEventListener('change', (e) => {
+                    this.settings.showMesh = e.target.checked;
+                });
+
+                // 重置相機
+                document.getElementById('resetCamera').addEventListener('click', () => {
+                    this.resetCamera();
+                });
+            }
+
+            onFaceMeshResults(results) {
+                if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                    const landmarks = results.multiFaceLandmarks[0];
+                    this.landmarks = landmarks;
+                    this.drawFaceMesh(landmarks);
+                }
+            }
+
+            drawFaceMesh(landmarks) {
+                if (!this.settings.showMesh) return;
+                
+                const canvas = this.canvasElement;
+                const ctx = canvas.getContext('2d');
+                
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // 繪製面部網格
+                ctx.strokeStyle = this.settings.meshColor;
+                ctx.lineWidth = this.settings.lineWidth;
+                ctx.globalAlpha = this.settings.opacity;
+                
+                // 繪製網格線條
+                this.drawFaceMeshLines(ctx, landmarks);
+                
+                // 繪製面部特徵點
+                if (this.settings.showLandmarks) {
+                    this.drawLandmarks(ctx, landmarks);
+                }
+            }
+
+            drawFaceMeshLines(ctx, landmarks) {
+                // 簡化的面部網格連接線
+                const connections = [
+                    // 臉部輪廓
+                    [10, 338], [338, 297], [297, 332], [332, 284], [284, 251], [251, 389], [389, 356], [356, 454], [454, 323], [323, 361], [361, 288], [288, 397], [397, 365], [365, 379], [379, 378], [378, 400], [400, 377], [377, 152], [152, 148], [148, 176], [176, 149], [149, 150], [150, 136], [136, 172], [172, 58], [58, 132], [132, 93], [93, 234], [234, 127], [127, 162], [162, 21], [21, 54], [54, 103], [103, 67], [67, 109], [109, 10],
+                    // 左眼
+                    [33, 7], [7, 163], [163, 144], [144, 145], [145, 153], [153, 154], [154, 155], [155, 133], [133, 173], [173, 157], [157, 158], [158, 159], [159, 160], [160, 161], [161, 246], [246, 33],
+                    // 右眼
+                    [362, 382], [382, 381], [381, 380], [380, 374], [374, 373], [373, 390], [390, 249], [249, 263], [263, 466], [466, 388], [388, 387], [387, 386], [386, 385], [385, 384], [384, 398], [398, 362],
+                    // 鼻子
+                    [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 168], [168, 8], [8, 9], [9, 10], [10, 151], [151, 337], [337, 338], [338, 339], [339, 340], [340, 341], [341, 342], [342, 343], [343, 344], [344, 345], [345, 346], [346, 347], [347, 348], [348, 349], [349, 350], [350, 351], [351, 352], [352, 353], [353, 354], [354, 355], [355, 356], [356, 357], [357, 358], [358, 359], [359, 360], [360, 361], [361, 362], [362, 363], [363, 364], [364, 365], [365, 366], [366, 367], [367, 368], [368, 369], [369, 370], [370, 371], [371, 372], [372, 373], [373, 374], [374, 375], [375, 376], [376, 377], [377, 378], [378, 379], [379, 380], [380, 381], [381, 382], [382, 383], [383, 384], [384, 385], [385, 386], [386, 387], [387, 388], [388, 389], [389, 390], [390, 391], [391, 392], [392, 393], [393, 394], [394, 395], [395, 396], [396, 397], [397, 398], [398, 399], [399, 400], [400, 401], [401, 402], [402, 403], [403, 404], [404, 405], [405, 406], [406, 407], [407, 408], [408, 409], [409, 410], [410, 411], [411, 412], [412, 413], [413, 414], [414, 415], [415, 416], [416, 417], [417, 418], [418, 419], [419, 420], [420, 421], [421, 422], [422, 423], [423, 424], [424, 425], [425, 426], [426, 427], [427, 428], [428, 429], [429, 430], [430, 431], [431, 432], [432, 433], [433, 434], [434, 435], [435, 436], [436, 437], [437, 438], [438, 439], [439, 440], [440, 441], [441, 442], [442, 443], [443, 444], [444, 445], [445, 446], [446, 447], [447, 448], [448, 449], [449, 450], [450, 451], [451, 452], [452, 453], [453, 454], [454, 455], [455, 456], [456, 457], [457, 458], [458, 459], [459, 460], [460, 461], [461, 462], [462, 463], [463, 464], [464, 465], [465, 466], [466, 467], [467, 468], [468, 1]
+                ];
+
+                ctx.beginPath();
+                connections.forEach(([start, end]) => {
+                    if (landmarks[start] && landmarks[end]) {
+                        const startX = landmarks[start].x * canvas.width;
+                        const startY = landmarks[start].y * canvas.height;
+                        const endX = landmarks[end].x * canvas.width;
+                        const endY = landmarks[end].y * canvas.height;
+                        
+                        ctx.moveTo(startX, startY);
+                        ctx.lineTo(endX, endY);
+                    }
+                });
+                ctx.stroke();
+            }
+
+            drawLandmarks(ctx, landmarks) {
+                ctx.fillStyle = this.settings.meshColor;
+                ctx.globalAlpha = 1;
+                
+                landmarks.forEach(landmark => {
+                    const x = landmark.x * ctx.canvas.width;
+                    const y = landmark.y * ctx.canvas.height;
+                    
+                    ctx.beginPath();
+                    ctx.arc(x, y, 2, 0, 2 * Math.PI);
+                    ctx.fill();
+                });
+            }
+
+            resetCamera() {
+                if (this.animationId) {
+                    cancelAnimationFrame(this.animationId);
+                }
+                this.isTracking = false;
+                this.setupCamera();
+            }
+
+            updateStatus(text, isConnected) {
+                const statusText = document.getElementById('statusText');
+                statusText.textContent = text;
+                statusText.style.color = isConnected ? '#4CAF50' : '#f44336';
+            }
+        }
+
+        // 初始化函數
+        function initFaceMesh() {
+            if (isMediaPipeLoaded) {
+                new SimpleFaceMeshTracker();
+            }
+        }
+
+        // 開始檢查MediaPipe
+        checkMediaPipeWithRetry();
+    </script>
+</body>
+</html>
+

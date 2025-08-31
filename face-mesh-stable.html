@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Mesh OBS - Stable Version</title>
+    
+    <!-- MediaPipe Face Mesh -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js"></script>
+    
+    <!-- Three.js for 3D rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: #000;
+            overflow: hidden;
+            color: white;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #videoElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+
+        #canvasElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+        }
+
+        #threeCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 3;
+            display: none;
+        }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            z-index: 10;
+            min-width: 250px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+            margin-bottom: 5px;
+        }
+
+        .control-group input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        .button {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            margin: 5px 0;
+            width: 100%;
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            z-index: 10;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-connected {
+            background-color: #4CAF50;
+        }
+
+        .status-disconnected {
+            background-color: #f44336;
+        }
+
+        #fps {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px 15px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            z-index: 10;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <video id="videoElement" autoplay muted></video>
+        <canvas id="canvasElement"></canvas>
+        <canvas id="threeCanvas"></canvas>
+        
+        <div id="status">
+            <span class="status-indicator status-disconnected" id="statusIndicator"></span>
+            <span id="statusText">初始化中...</span>
+        </div>
+
+        <div id="controls">
+            <h3 style="margin-bottom: 20px; text-align: center;">Face Mesh 控制</h3>
+            
+            <div class="control-group">
+                <label>顯示模式</label>
+                <button class="button" id="toggleMode">切換到3D模式</button>
+            </div>
+
+            <div class="control-group">
+                <label>網格透明度: <span id="opacityValue">0.8</span></label>
+                <input type="range" id="opacitySlider" min="0" max="1" step="0.1" value="0.8">
+            </div>
+
+            <div class="control-group">
+                <label>網格顏色</label>
+                <input type="color" id="meshColor" value="#00ff88">
+            </div>
+
+            <div class="control-group">
+                <label>線條寬度: <span id="lineWidthValue">1</span></label>
+                <input type="range" id="lineWidthSlider" min="0.1" max="5" step="0.1" value="1">
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="showLandmarks" checked> 顯示面部特徵點
+                </label>
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="showMesh" checked> 顯示網格
+                </label>
+            </div>
+
+            <button class="button" id="resetCamera">重置相機</button>
+            <button class="button" id="fullscreen">全螢幕</button>
+        </div>
+
+        <div id="fps">
+            FPS: <span id="fpsValue">0</span>
+        </div>
+    </div>
+
+    <script>
+        class StableFaceMeshTracker {
+            constructor() {
+                this.faceMesh = null;
+                this.videoElement = null;
+                this.canvasElement = null;
+                this.threeCanvas = null;
+                this.threeScene = null;
+                this.threeCamera = null;
+                this.threeRenderer = null;
+                this.faceMesh3D = null;
+                this.landmarks = [];
+                this.is3DMode = false;
+                this.isTracking = false;
+                this.fpsCounter = 0;
+                this.lastTime = 0;
+                this.animationId = null;
+                
+                this.settings = {
+                    opacity: 0.8,
+                    meshColor: '#00ff88',
+                    lineWidth: 1,
+                    showLandmarks: true,
+                    showMesh: true
+                };
+                
+                this.init();
+            }
+
+            async init() {
+                try {
+                    await this.setupMediaPipe();
+                    this.setupThreeJS();
+                    this.setupCamera();
+                    this.setupControls();
+                    this.setupEventListeners();
+                    this.animate();
+                    this.updateStatus('已連接', true);
+                } catch (error) {
+                    console.error('初始化失敗:', error);
+                    this.updateStatus('初始化失敗: ' + error.message, false);
+                }
+            }
+
+            async setupMediaPipe() {
+                if (typeof FaceMesh === 'undefined') {
+                    throw new Error('MediaPipe Face Mesh 未載入');
+                }
+
+                this.faceMesh = new FaceMesh({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}`;
+                    }
+                });
+
+                this.faceMesh.setOptions({
+                    maxNumFaces: 1,
+                    refineLandmarks: true,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                this.faceMesh.onResults((results) => {
+                    this.onFaceMeshResults(results);
+                });
+            }
+
+            setupThreeJS() {
+                if (typeof THREE === 'undefined') {
+                    console.warn('Three.js 未載入，3D模式將不可用');
+                    return;
+                }
+
+                this.threeCanvas = document.getElementById('threeCanvas');
+                
+                // 創建場景
+                this.threeScene = new THREE.Scene();
+                this.threeScene.background = new THREE.Color(0x000000);
+                
+                // 創建相機
+                this.threeCamera = new THREE.PerspectiveCamera(
+                    75, 
+                    window.innerWidth / window.innerHeight, 
+                    0.1, 
+                    1000
+                );
+                this.threeCamera.position.z = 5;
+                
+                // 創建渲染器
+                this.threeRenderer = new THREE.WebGLRenderer({ 
+                    canvas: this.threeCanvas, 
+                    alpha: true,
+                    antialias: true 
+                });
+                this.threeRenderer.setSize(window.innerWidth, window.innerHeight);
+                this.threeRenderer.setPixelRatio(window.devicePixelRatio);
+                
+                // 創建面部網格
+                this.createFaceMesh3D();
+                
+                // 添加燈光
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                this.threeScene.add(ambientLight);
+                
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(1, 1, 1);
+                this.threeScene.add(directionalLight);
+            }
+
+            createFaceMesh3D() {
+                if (!this.threeRenderer) return;
+
+                // 創建面部網格幾何體
+                const geometry = new THREE.BufferGeometry();
+                const vertices = [];
+                
+                // 簡化的面部網格（實際使用時會根據MediaPipe的468個點來創建）
+                for (let i = 0; i < 468; i++) {
+                    vertices.push(0, 0, 0);
+                }
+                
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+                
+                // 創建材質
+                const material = new THREE.MeshBasicMaterial({
+                    color: this.settings.meshColor,
+                    transparent: true,
+                    opacity: this.settings.opacity,
+                    wireframe: true
+                });
+                
+                this.faceMesh3D = new THREE.Mesh(geometry, material);
+                this.threeScene.add(this.faceMesh3D);
+            }
+
+            async setupCamera() {
+                this.videoElement = document.getElementById('videoElement');
+                this.canvasElement = document.getElementById('canvasElement');
+                
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 },
+                            facingMode: 'user'
+                        }
+                    });
+                    
+                    this.videoElement.srcObject = stream;
+                    this.isTracking = true;
+                    
+                    // 開始面部追蹤循環
+                    this.startTracking();
+                } catch (error) {
+                    console.error('相機訪問失敗:', error);
+                    this.updateStatus('相機訪問失敗: ' + error.message, false);
+                }
+            }
+
+            startTracking() {
+                const trackFrame = async () => {
+                    if (this.isTracking && this.faceMesh && this.videoElement.readyState === 4) {
+                        try {
+                            await this.faceMesh.send({ image: this.videoElement });
+                        } catch (error) {
+                            console.warn('面部追蹤錯誤:', error);
+                        }
+                    }
+                    
+                    if (this.isTracking) {
+                        this.animationId = requestAnimationFrame(trackFrame);
+                    }
+                };
+                
+                trackFrame();
+            }
+
+            setupControls() {
+                // 透明度控制
+                const opacitySlider = document.getElementById('opacitySlider');
+                const opacityValue = document.getElementById('opacityValue');
+                
+                opacitySlider.addEventListener('input', (e) => {
+                    this.settings.opacity = parseFloat(e.target.value);
+                    opacityValue.textContent = this.settings.opacity.toFixed(1);
+                    if (this.faceMesh3D) {
+                        this.faceMesh3D.material.opacity = this.settings.opacity;
+                    }
+                });
+
+                // 網格顏色控制
+                const meshColor = document.getElementById('meshColor');
+                meshColor.addEventListener('change', (e) => {
+                    this.settings.meshColor = e.target.value;
+                    if (this.faceMesh3D) {
+                        this.faceMesh3D.material.color.setHex(parseInt(this.settings.meshColor.replace('#', ''), 16));
+                    }
+                });
+
+                // 線條寬度控制
+                const lineWidthSlider = document.getElementById('lineWidthSlider');
+                const lineWidthValue = document.getElementById('lineWidthValue');
+                
+                lineWidthSlider.addEventListener('input', (e) => {
+                    this.settings.lineWidth = parseFloat(e.target.value);
+                    lineWidthValue.textContent = this.settings.lineWidth.toFixed(1);
+                });
+
+                // 顯示選項
+                document.getElementById('showLandmarks').addEventListener('change', (e) => {
+                    this.settings.showLandmarks = e.target.checked;
+                });
+
+                document.getElementById('showMesh').addEventListener('change', (e) => {
+                    this.settings.showMesh = e.target.checked;
+                });
+
+                // 按鈕控制
+                document.getElementById('toggleMode').addEventListener('click', () => {
+                    this.toggle3DMode();
+                });
+
+                document.getElementById('resetCamera').addEventListener('click', () => {
+                    this.resetCamera();
+                });
+
+                document.getElementById('fullscreen').addEventListener('click', () => {
+                    this.toggleFullscreen();
+                });
+            }
+
+            setupEventListeners() {
+                window.addEventListener('resize', () => {
+                    this.onWindowResize();
+                });
+
+                // 隱藏控制面板的快捷鍵
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'h' || e.key === 'H') {
+                        this.toggleControls();
+                    }
+                });
+            }
+
+            onFaceMeshResults(results) {
+                if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                    const landmarks = results.multiFaceLandmarks[0];
+                    this.landmarks = landmarks;
+                    
+                    if (this.is3DMode) {
+                        this.update3DFaceMesh(landmarks);
+                    } else {
+                        this.draw2DFaceMesh(landmarks);
+                    }
+                }
+            }
+
+            draw2DFaceMesh(landmarks) {
+                if (!this.settings.showMesh) return;
+                
+                const canvas = this.canvasElement;
+                const ctx = canvas.getContext('2d');
+                
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // 繪製面部網格
+                ctx.strokeStyle = this.settings.meshColor;
+                ctx.lineWidth = this.settings.lineWidth;
+                ctx.globalAlpha = this.settings.opacity;
+                
+                // 繪製網格線條
+                this.drawFaceMeshLines(ctx, landmarks);
+                
+                // 繪製面部特徵點
+                if (this.settings.showLandmarks) {
+                    this.drawLandmarks(ctx, landmarks);
+                }
+            }
+
+            drawFaceMeshLines(ctx, landmarks) {
+                // 簡化的面部網格連接線
+                const connections = [
+                    // 臉部輪廓
+                    [10, 338], [338, 297], [297, 332], [332, 284], [284, 251], [251, 389], [389, 356], [356, 454], [454, 323], [323, 361], [361, 288], [288, 397], [397, 365], [365, 379], [379, 378], [378, 400], [400, 377], [377, 152], [152, 148], [148, 176], [176, 149], [149, 150], [150, 136], [136, 172], [172, 58], [58, 132], [132, 93], [93, 234], [234, 127], [127, 162], [162, 21], [21, 54], [54, 103], [103, 67], [67, 109], [109, 10],
+                    // 左眼
+                    [33, 7], [7, 163], [163, 144], [144, 145], [145, 153], [153, 154], [154, 155], [155, 133], [133, 173], [173, 157], [157, 158], [158, 159], [159, 160], [160, 161], [161, 246], [246, 33],
+                    // 右眼
+                    [362, 382], [382, 381], [381, 380], [380, 374], [374, 373], [373, 390], [390, 249], [249, 263], [263, 466], [466, 388], [388, 387], [387, 386], [386, 385], [385, 384], [384, 398], [398, 362],
+                    // 鼻子
+                    [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 168], [168, 8], [8, 9], [9, 10], [10, 151], [151, 337], [337, 338], [338, 339], [339, 340], [340, 341], [341, 342], [342, 343], [343, 344], [344, 345], [345, 346], [346, 347], [347, 348], [348, 349], [349, 350], [350, 351], [351, 352], [352, 353], [353, 354], [354, 355], [355, 356], [356, 357], [357, 358], [358, 359], [359, 360], [360, 361], [361, 362], [362, 363], [363, 364], [364, 365], [365, 366], [366, 367], [367, 368], [368, 369], [369, 370], [370, 371], [371, 372], [372, 373], [373, 374], [374, 375], [375, 376], [376, 377], [377, 378], [378, 379], [379, 380], [380, 381], [381, 382], [382, 383], [383, 384], [384, 385], [385, 386], [386, 387], [387, 388], [388, 389], [389, 390], [390, 391], [391, 392], [392, 393], [393, 394], [394, 395], [395, 396], [396, 397], [397, 398], [398, 399], [399, 400], [400, 401], [401, 402], [402, 403], [403, 404], [404, 405], [405, 406], [406, 407], [407, 408], [408, 409], [409, 410], [410, 411], [411, 412], [412, 413], [413, 414], [414, 415], [415, 416], [416, 417], [417, 418], [418, 419], [419, 420], [420, 421], [421, 422], [422, 423], [423, 424], [424, 425], [425, 426], [426, 427], [427, 428], [428, 429], [429, 430], [430, 431], [431, 432], [432, 433], [433, 434], [434, 435], [435, 436], [436, 437], [437, 438], [438, 439], [439, 440], [440, 441], [441, 442], [442, 443], [443, 444], [444, 445], [445, 446], [446, 447], [447, 448], [448, 449], [449, 450], [450, 451], [451, 452], [452, 453], [453, 454], [454, 455], [455, 456], [456, 457], [457, 458], [458, 459], [459, 460], [460, 461], [461, 462], [462, 463], [463, 464], [464, 465], [465, 466], [466, 467], [467, 468], [468, 1]
+                ];
+
+                ctx.beginPath();
+                connections.forEach(([start, end]) => {
+                    if (landmarks[start] && landmarks[end]) {
+                        const startX = landmarks[start].x * canvas.width;
+                        const startY = landmarks[start].y * canvas.height;
+                        const endX = landmarks[end].x * canvas.width;
+                        const endY = landmarks[end].y * canvas.height;
+                        
+                        ctx.moveTo(startX, startY);
+                        ctx.lineTo(endX, endY);
+                    }
+                });
+                ctx.stroke();
+            }
+
+            drawLandmarks(ctx, landmarks) {
+                ctx.fillStyle = this.settings.meshColor;
+                ctx.globalAlpha = 1;
+                
+                landmarks.forEach(landmark => {
+                    const x = landmark.x * ctx.canvas.width;
+                    const y = landmark.y * ctx.canvas.height;
+                    
+                    ctx.beginPath();
+                    ctx.arc(x, y, 2, 0, 2 * Math.PI);
+                    ctx.fill();
+                });
+            }
+
+            update3DFaceMesh(landmarks) {
+                if (!this.faceMesh3D || !this.settings.showMesh) return;
+                
+                // 更新3D網格頂點位置
+                const positions = this.faceMesh3D.geometry.attributes.position.array;
+                
+                landmarks.forEach((landmark, index) => {
+                    if (index * 3 + 2 < positions.length) {
+                        // 將2D座標轉換為3D座標
+                        const x = (landmark.x - 0.5) * 10;
+                        const y = (0.5 - landmark.y) * 10;
+                        const z = landmark.z * 5;
+                        
+                        positions[index * 3] = x;
+                        positions[index * 3 + 1] = y;
+                        positions[index * 3 + 2] = z;
+                    }
+                });
+                
+                this.faceMesh3D.geometry.attributes.position.needsUpdate = true;
+            }
+
+            toggle3DMode() {
+                if (!this.threeRenderer) {
+                    alert('3D模式不可用，請檢查Three.js是否正確載入');
+                    return;
+                }
+
+                this.is3DMode = !this.is3DMode;
+                const button = document.getElementById('toggleMode');
+                
+                if (this.is3DMode) {
+                    button.textContent = '切換到2D模式';
+                    this.canvasElement.style.display = 'none';
+                    this.threeCanvas.style.display = 'block';
+                } else {
+                    button.textContent = '切換到3D模式';
+                    this.canvasElement.style.display = 'block';
+                    this.threeCanvas.style.display = 'none';
+                }
+            }
+
+            resetCamera() {
+                if (this.animationId) {
+                    cancelAnimationFrame(this.animationId);
+                }
+                this.isTracking = false;
+                this.setupCamera();
+            }
+
+            toggleFullscreen() {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen();
+                } else {
+                    document.exitFullscreen();
+                }
+            }
+
+            toggleControls() {
+                const controls = document.getElementById('controls');
+                controls.style.display = controls.style.display === 'none' ? 'block' : 'none';
+            }
+
+            onWindowResize() {
+                if (this.threeRenderer) {
+                    this.threeCamera.aspect = window.innerWidth / window.innerHeight;
+                    this.threeCamera.updateProjectionMatrix();
+                    this.threeRenderer.setSize(window.innerWidth, window.innerHeight);
+                }
+                
+                if (this.canvasElement) {
+                    this.canvasElement.width = window.innerWidth;
+                    this.canvasElement.height = window.innerHeight;
+                }
+            }
+
+            updateStatus(text, isConnected) {
+                const statusText = document.getElementById('statusText');
+                const statusIndicator = document.getElementById('statusIndicator');
+                
+                statusText.textContent = text;
+                statusIndicator.className = `status-indicator ${isConnected ? 'status-connected' : 'status-disconnected'}`;
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                
+                // 更新FPS計數器
+                this.fpsCounter++;
+                const currentTime = performance.now();
+                
+                if (currentTime - this.lastTime >= 1000) {
+                    document.getElementById('fpsValue').textContent = this.fpsCounter;
+                    this.fpsCounter = 0;
+                    this.lastTime = currentTime;
+                }
+                
+                // 渲染3D場景
+                if (this.is3DMode && this.threeRenderer && this.threeScene && this.threeCamera) {
+                    this.threeRenderer.render(this.threeScene, this.threeCamera);
+                }
+            }
+        }
+
+        // 當頁面加載完成後初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            new StableFaceMeshTracker();
+        });
+    </script>
+</body>
+</html>
+

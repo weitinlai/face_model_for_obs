@@ -1,0 +1,42 @@
+{
+  "name": "face-mesh-obs",
+  "version": "1.0.0",
+  "description": "Face Mesh browser source for OBS Studio using MediaPipe",
+  "main": "index.html",
+  "scripts": {
+    "start": "python -m http.server 8000",
+    "start-node": "npx http-server -p 8000",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "obs",
+    "face-mesh",
+    "mediapipe",
+    "browser-source",
+    "facial-tracking",
+    "3d-mesh"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/face-mesh-obs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/face-mesh-obs/issues"
+  },
+  "homepage": "https://github.com/yourusername/face-mesh-obs#readme",
+  "dependencies": {},
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ]
+}
+
